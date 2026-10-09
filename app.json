@@ -1,0 +1,35 @@
+{
+  "name": "DeepSeek Pyrogram Bot",
+  "description": "Telegram AI bot powered by DeepSeek",
+  "repository": "https://github.com/Badmundaxd/deep",
+  "keywords": [
+    "telegram",
+    "pyrogram",
+    "deepseek",
+    "ai",
+    "bot"
+  ],
+  "env": {
+    "API_ID": {
+      "description": "Telegram API ID from my.telegram.org",
+      "required": true
+    },
+    "API_HASH": {
+      "description": "Telegram API Hash from my.telegram.org",
+      "required": true
+    },
+    "BOT_TOKEN": {
+      "description": "Telegram bot token from @BotFather",
+      "required": true
+    },
+    "GROQ_API_KEY": {
+      "description": "Groq API key",
+      "required": true
+    }
+  },
+  "buildpacks": [
+    {
+      "url": "heroku/python"
+    }
+  ]
+}
