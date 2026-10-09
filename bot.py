@@ -2,8 +2,15 @@ import asyncio
 import logging
 import os
 import random
+import re
+
+# Event loop must exist BEFORE the Clients are created
+# (pyrogram's Client grabs the current loop in __init__).
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
 
 from pyrogram import Client, filters, idle
+from pyrogram.types import InlineQueryResultArticle, InputRichMessageContent
 
 from richgram import (
     RICH_AVAILABLE,
@@ -18,13 +25,12 @@ from richgram import (
     rich_note,
     rich_pre,
     rich_reply,
-    rich_send,
     rich_table,
 )
-from richgram.rich_ui import _input_rich  # builds the InputRichMessage (used for the raw userbot test)
+from richgram.rich_ui import _input_rich  # builds InputRichMessage from our HTML
 
 logging.basicConfig(level=logging.INFO)
-logging.getLogger("richgram").setLevel(logging.DEBUG)  # shows why a rich message fell back to plain text
+logging.getLogger("richgram").setLevel(logging.DEBUG)
 
 # =========================
 # Configuration
@@ -33,25 +39,22 @@ logging.getLogger("richgram").setLevel(logging.DEBUG)  # shows why a rich messag
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-STRING_SESSION = os.getenv("STRING_SESSION")  # optional
+STRING_SESSION = os.getenv("STRING_SESSION")  # optional (userbot)
+EXTRA_OWNER_ID = os.getenv("OWNER_ID")        # optional
 
 if not (API_ID and API_HASH and BOT_TOKEN):
     raise SystemExit("API_ID, API_HASH and BOT_TOKEN are required.")
 
-# =========================
-# Event loop (must exist BEFORE the Clients are created,
-# because pyrogram's Client grabs the current loop in __init__)
-# =========================
-
-loop = asyncio.new_event_loop()
-asyncio.set_event_loop(loop)
+OWNER_IDS = set()          # filled at startup (userbot account + OWNER_ID)
+BOT_USERNAME = None        # filled at startup
+if EXTRA_OWNER_ID and EXTRA_OWNER_ID.lstrip("-").isdigit():
+    OWNER_IDS.add(int(EXTRA_OWNER_ID))
 
 # =========================
 # Clients
 # =========================
 
 bot = Client("rich_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, in_memory=True)
-
 user = (
     Client("rich_user", api_id=API_ID, api_hash=API_HASH, session_string=STRING_SESSION, in_memory=True)
     if STRING_SESSION
@@ -65,15 +68,33 @@ def style() -> str:
     return random.choice(STYLES)
 
 
+def is_owner(user_id) -> bool:
+    return (not OWNER_IDS) or (user_id in OWNER_IDS)
+
+
 # =========================
-# Test content
+# Inline helper
+# A rich message can be returned as an inline result. Buttons live inside the
+# HTML (<tg-button>), so no reply_markup is needed.
+# =========================
+
+def inline_rich_article(result_id: str, title: str, description: str, html: str) -> InlineQueryResultArticle:
+    return InlineQueryResultArticle(
+        id=result_id,
+        title=title,
+        description=description,
+        input_message_content=InputRichMessageContent(rich_message=_input_rich(html)),
+    )
+
+
+# =========================
+# TEST 1 - rich message (no buttons)
 # =========================
 
 def test1_text(who: str) -> str:
-    """TEST 1: rich message (heading, table, list, details, code) with no buttons."""
     return (
         rich_heading(f"Test 1 - Rich message ({who})", level=3)
-        + rich_note("Agar tuhanu heading, table te collapsible block dikh rahe han, rich message chal reha hai.")
+        + rich_note("Heading, table te collapsible block dikh rahe han taan rich message chal reha hai.")
         + rich_kv_table([
             ("Sent by", who),
             ("RICH_AVAILABLE", "yes" if RICH_AVAILABLE else "no"),
@@ -89,8 +110,11 @@ def test1_text(who: str) -> str:
     )
 
 
+# =========================
+# TEST 2 - rich message + colored buttons
+# =========================
+
 def test2_text(who: str) -> str:
-    """TEST 2: rich message + colored buttons."""
     return (
         rich_heading(f"Test 2 - Rich buttons ({who})", level=3)
         + rich_note("Har button nu dabao. Shuffle dabane te colours badal jande ne.")
@@ -113,7 +137,66 @@ def test2_kb() -> str:
     )
 
 
-def menu_text() -> str:
+# =========================
+# HELP MENU (rich buttons, paginated, works inside inline messages)
+# callback data: help_plugin(<key>)  help_prev(<n>)  help_next(<n>)  help_back  help_close
+# =========================
+
+PLUGINS = {
+    "ping":   ("Ping",   "Bot/userbot di speed check karda hai.\n<code>.ping</code>"),
+    "rich":   ("Rich",   "Rich message test.\n<code>.richtest</code>"),
+    "button": ("Button", "Rich button test.\n<code>.btntest</code>"),
+    "help":   ("Help",   "Eh menu kholda hai.\n<code>.help</code>"),
+    "alive":  ("Alive",  "Userbot zinda hai ya nahi.\n<code>.alive</code>"),
+    "sudo":   ("Sudo",   "Sudo users manage karo.\n<code>.addsudo</code> / <code>.delsudo</code>"),
+    "tools":  ("Tools",  "Chhote tools (id, info, etc.)."),
+}
+PER_PAGE = 4  # plugin buttons per page (2 per row)
+
+
+def help_top_text() -> str:
+    return (
+        rich_heading("Help Menu", level=3)
+        + rich_note("Neeche de buttons te dabake plugin de commands dekho.")
+        + rich_kv_table([("Plugins", str(len(PLUGINS))), ("Rich support", "yes" if RICH_AVAILABLE else "no")])
+    )
+
+
+def help_keyboard(page: int) -> str:
+    keys = sorted(PLUGINS, key=lambda k: PLUGINS[k][0].lower())
+    pages = max(1, -(-len(keys) // PER_PAGE))
+    page %= pages
+    chunk = keys[page * PER_PAGE:(page + 1) * PER_PAGE]
+    buttons = [
+        rich_button(PLUGINS[k][0], callback_data=f"help_plugin({k})", style=style()) for k in chunk
+    ]
+    kb = ""
+    for i in range(0, len(buttons), 2):
+        kb += rich_button_row(*buttons[i:i + 2])
+    if pages > 1:
+        kb += rich_button_row(
+            rich_button("<<", callback_data=f"help_prev({page})", style="primary"),
+            rich_button(f"{page + 1}/{pages}", callback_data=f"help_page({page})"),
+            rich_button(">>", callback_data=f"help_next({page})", style="primary"),
+        )
+    kb += rich_button_row(rich_button("Close", callback_data="help_close", style="danger"))
+    return kb
+
+
+def help_plugin_text(key: str) -> str:
+    name, body = PLUGINS[key]
+    return rich_heading(f"Plugin: {name}", level=3) + rich_note(body)
+
+
+def help_plugin_kb() -> str:
+    return rich_button_row(rich_button("Back", callback_data="help_back", style="primary"))
+
+
+# =========================
+# Menu texts for the bot's own /start
+# =========================
+
+def start_text() -> str:
     return (
         rich_heading("richgram test bot", level=3)
         + rich_kv_table([
@@ -121,27 +204,30 @@ def menu_text() -> str:
             ("Userbot (string session)", "on" if user else "off"),
         ])
         + rich_list([
+            "/help - help menu (rich buttons)",
             "/richtest - Test 1: rich message",
             "/btntest - Test 2: rich buttons",
-            "Userbot: <code>.richtest</code> and <code>.btntest</code>" if user else "Userbot off (STRING_SESSION nahi hai)",
+            "Userbot: <code>.help</code> <code>.richtest</code> <code>.btntest</code>" if user
+            else "Userbot off (STRING_SESSION nahi hai)",
         ])
     )
 
 
-def menu_kb() -> str:
+def start_kb() -> str:
     return rich_button_row(
-        rich_button("Test 1: Rich message", callback_data="run_t1", style="primary"),
-        rich_button("Test 2: Rich buttons", callback_data="run_t2", style="success"),
+        rich_button("Test 1", callback_data="run_t1", style="primary"),
+        rich_button("Test 2", callback_data="run_t2", style="success"),
+        rich_button("Help", callback_data="run_help", style="danger"),
     )
 
 
 # =========================
-# BOT handlers (BOT_TOKEN)
+# BOT: direct commands (in the bot's chat)
 # =========================
 
 @bot.on_message(filters.command("start"))
-async def start(_, message):
-    await rich_reply(message, menu_text() + menu_kb())
+async def bot_start(_, message):
+    await rich_reply(message, start_text() + start_kb())
 
 
 @bot.on_message(filters.command("richtest"))
@@ -154,69 +240,141 @@ async def bot_btntest(_, message):
     await rich_reply(message, test2_text("bot") + test2_kb())
 
 
-@bot.on_callback_query(filters.regex("^run_t1$"))
+@bot.on_message(filters.command("help"))
+async def bot_help(_, message):
+    await rich_reply(message, help_top_text() + help_keyboard(0))
+
+
+# =========================
+# BOT: callbacks. rich_edit(cbq, ...) edits BOTH normal and inline messages.
+# =========================
+
+@bot.on_callback_query(filters.regex(r"^run_t1$"))
 async def cb_run_t1(_, cbq):
-    await rich_send(cbq._client, cbq.message.chat.id, test1_text("bot"))
+    await rich_reply(cbq, test1_text("bot"))
     await cbq.answer("Test 1 bhej ditta")
 
 
-@bot.on_callback_query(filters.regex("^run_t2$"))
+@bot.on_callback_query(filters.regex(r"^run_t2$"))
 async def cb_run_t2(_, cbq):
-    await rich_send(cbq._client, cbq.message.chat.id, test2_text("bot") + test2_kb())
+    await rich_reply(cbq, test2_text("bot") + test2_kb())
     await cbq.answer("Test 2 bhej ditta")
 
 
-@bot.on_callback_query(filters.regex("^color_"))
+@bot.on_callback_query(filters.regex(r"^run_help$"))
+async def cb_run_help(_, cbq):
+    await rich_reply(cbq, help_top_text() + help_keyboard(0))
+    await cbq.answer()
+
+
+@bot.on_callback_query(filters.regex(r"^color_"))
 async def cb_color(_, cbq):
-    await cbq.answer(f"Tusi {cbq.data.split('_', 1)[1]} button dabaya", show_alert=False)
+    await cbq.answer(f"Tusi {cbq.data.split('_', 1)[1]} button dabaya")
 
 
-@bot.on_callback_query(filters.regex("^shuffle$"))
+@bot.on_callback_query(filters.regex(r"^shuffle$"))
 async def cb_shuffle(_, cbq):
     await rich_edit(cbq, test2_text("bot") + test2_kb())  # new random colours
     await cbq.answer("Colours shuffled")
 
 
-@bot.on_callback_query(filters.regex("^ping$"))
+@bot.on_callback_query(filters.regex(r"^ping$"))
 async def cb_ping(_, cbq):
     await cbq.answer("Pong!", show_alert=True)
 
 
-@bot.on_callback_query(filters.regex("^close$"))
+@bot.on_callback_query(filters.regex(r"^close$"))
 async def cb_close(_, cbq):
-    await cbq.message.delete()
+    if cbq.message:
+        await cbq.message.delete()
+    else:  # inline messages cannot be deleted by the bot, so we edit them
+        await rich_edit(cbq, rich_note("Closed."))
+        await cbq.answer()
+
+
+@bot.on_callback_query(filters.regex(r"^help_"))
+async def cb_help(_, cbq):
+    if not is_owner(cbq.from_user.id):
+        return await cbq.answer("Eh menu sirf owner layi hai.", show_alert=True)
+
+    data = cbq.data
+    if m := re.match(r"help_plugin\((.+?)\)$", data):
+        key = m.group(1)
+        if key not in PLUGINS:
+            return await cbq.answer("Plugin nahi mila", show_alert=True)
+        await rich_edit(cbq, help_plugin_text(key) + help_plugin_kb())
+    elif m := re.match(r"help_prev\((\d+)\)$", data):
+        await rich_edit(cbq, help_top_text() + help_keyboard(int(m.group(1)) - 1))
+    elif m := re.match(r"help_next\((\d+)\)$", data):
+        await rich_edit(cbq, help_top_text() + help_keyboard(int(m.group(1)) + 1))
+    elif data == "help_back":
+        await rich_edit(cbq, help_top_text() + help_keyboard(0))
+    elif data == "help_close":
+        if cbq.message:
+            await cbq.message.delete()
+        else:
+            await rich_edit(cbq, rich_note("Help menu closed."))
+    await cbq.answer()
 
 
 # =========================
-# USERBOT handlers (STRING_SESSION)
-# Commands: .richtest  .btntest   (send them from the user account itself)
-# A user account calls send_rich_message directly here, so the real
-# Telegram result/error is shown instead of a silent fallback.
+# BOT: inline query  ->  returns rich messages (with buttons) as inline results
+# The userbot asks for these, then sends the chosen result into any chat.
+#   "help"     -> help menu
+#   "richtest" -> Test 1
+#   "btntest"  -> Test 2
+#   (empty)    -> all three (so you can also type @botusername in any chat)
+# Needs inline mode ON in @BotFather:  /setinline
 # =========================
 
-async def _raw_rich_test(client, message, text: str, label: str):
-    chat_id = message.chat.id
+@bot.on_inline_query()
+async def on_inline(_, q):
+    if not is_owner(q.from_user.id):
+        return await q.answer([], cache_time=1)
+
+    items = {
+        "help": inline_rich_article("help", "Help menu", "Rich buttons help menu", help_top_text() + help_keyboard(0)),
+        "richtest": inline_rich_article("richtest", "Test 1", "Rich message", test1_text("userbot via inline")),
+        "btntest": inline_rich_article("btntest", "Test 2", "Rich buttons", test2_text("userbot via inline") + test2_kb()),
+    }
+    key = q.query.strip().lower()
+    results = [items[key]] if key in items else list(items.values())
+    await q.answer(results, cache_time=0, is_personal=True)
+
+
+# =========================
+# USERBOT (STRING_SESSION)
+# A user account cannot send rich messages or buttons directly
+# (Telegram: RICH_MESSAGE_UNSUPPORTED), so it asks the bot through inline mode
+# and sends the result.   Commands (send from your own account): .help .richtest .btntest
+# =========================
+
+async def send_via_inline(message, query: str):
     try:
-        await client.send_rich_message(chat_id=chat_id, rich_message=_input_rich(text))
-        await message.edit_text(f"{label}: rich message SEND HO GAYA (user account ton).")
+        res = await user.get_inline_bot_results(f"@{BOT_USERNAME}", query)
+        if not res.results:
+            raise RuntimeError("bot ne koi inline result nahi ditta")
+        await user.send_inline_bot_result(
+            chat_id=message.chat.id,
+            query_id=res.query_id,
+            result_id=res.results[0].id,
+        )
+        try:
+            await message.delete()
+        except Exception:
+            pass
     except Exception as e:
         await message.edit_text(
-            f"{label}: user account ton rich message NAHI gaya.\n"
-            f"Error: {type(e).__name__}: {e}\n\n"
-            "Plain-text fallback neeche bhej reha haan."
+            f"Inline ton nahi gaya.\n{type(e).__name__}: {e}\n\n"
+            f"Check karo: @BotFather -> /setinline -> @{BOT_USERNAME} te inline mode ON hai?"
         )
-        await rich_send(client, chat_id, text)  # richgram's plain-text fallback
 
 
 if user:
 
-    @user.on_message(filters.me & filters.command("richtest", prefixes="."))
-    async def user_richtest(client, message):
-        await _raw_rich_test(client, message, test1_text("userbot"), "Test 1")
-
-    @user.on_message(filters.me & filters.command("btntest", prefixes="."))
-    async def user_btntest(client, message):
-        await _raw_rich_test(client, message, test2_text("userbot") + test2_kb(), "Test 2")
+    @user.on_message(filters.me & filters.command(["help", "richtest", "btntest"], prefixes="."))
+    async def user_cmds(_, message):
+        await send_via_inline(message, message.command[0].lower())
 
 
 # =========================
@@ -224,11 +382,16 @@ if user:
 # =========================
 
 async def main():
+    global BOT_USERNAME
     await bot.start()
+    BOT_USERNAME = (await bot.get_me()).username
     if user:
         await user.start()
-    me = await bot.get_me()
-    print(f"Bot started: @{me.username} | userbot: {'on' if user else 'off'} | RICH_AVAILABLE={RICH_AVAILABLE}")
+        OWNER_IDS.add((await user.get_me()).id)
+    print(
+        f"Bot started: @{BOT_USERNAME} | userbot: {'on' if user else 'off'} "
+        f"| RICH_AVAILABLE={RICH_AVAILABLE} | owners={sorted(OWNER_IDS)}"
+    )
     await idle()
     if user:
         await user.stop()
@@ -237,3 +400,4 @@ async def main():
 
 if __name__ == "__main__":
     loop.run_until_complete(main())
+                                         
