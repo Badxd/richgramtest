@@ -69,11 +69,10 @@ user = (
     else None
 )
 
-STYLES = ("primary", "success", "danger")
-
-
-def style() -> str:
-    return random.choice(STYLES)
+def random_style() -> str:
+    """Random button colour - changes on every redraw."""
+    return random.choice(["success", "danger", "primary"
+])
 
 
 def is_owner(user_id) -> bool:
@@ -179,10 +178,10 @@ def test2_kb() -> str:
             rich_button("Red", callback_data="color_danger", style="danger"),
         )
         + rich_button_row(
-            rich_button("Shuffle colours", callback_data="shuffle", style=style()),
-            rich_button("Ping", callback_data="ping", style=style()),
+            rich_button("Shuffle colours", callback_data="shuffle", style=random_style()),
+            rich_button("Ping", callback_data="ping", style=random_style()),
         )
-        + rich_button_row(rich_button("Support", url="https://t.me/BadmundaXd", style=style()))
+        + rich_button_row(rich_button("Support", url="https://t.me/BadmundaXd", style=random_style()))
         + rich_button_row(rich_button("Close", callback_data="close", style="danger"))
     )
 
@@ -218,16 +217,16 @@ def help_keyboard(page: int) -> str:
     page %= pages
     chunk = keys[page * PER_PAGE:(page + 1) * PER_PAGE]
     buttons = [
-        rich_button(PLUGINS[k][0], callback_data=f"help_plugin({k})", style=style()) for k in chunk
+        rich_button(PLUGINS[k][0], callback_data=f"help_plugin({k})", style=random_style()) for k in chunk
     ]
     kb = ""
     for i in range(0, len(buttons), 2):
         kb += rich_button_row(*buttons[i:i + 2])
     if pages > 1:
         kb += rich_button_row(
-            rich_button("<<", callback_data=f"help_prev({page})", style="primary"),
+            rich_button("<<", callback_data=f"help_prev({page})", style=random_style()),
             rich_button(f"{page + 1}/{pages}", callback_data=f"help_page({page})"),
-            rich_button(">>", callback_data=f"help_next({page})", style="primary"),
+            rich_button(">>", callback_data=f"help_next({page})", style=random_style()),
         )
     kb += rich_button_row(rich_button("Close", callback_data="help_close", style="danger"))
     return kb
@@ -239,7 +238,7 @@ def help_plugin_text(key: str) -> str:
 
 
 def help_plugin_kb() -> str:
-    return rich_button_row(rich_button("Back", callback_data="help_back", style="primary"))
+    return rich_button_row(rich_button("Back", callback_data="help_back", style=random_style()))
 
 
 # =========================
@@ -265,9 +264,9 @@ def start_text() -> str:
 
 def start_kb() -> str:
     return rich_button_row(
-        rich_button("Test 1", callback_data="run_t1", style="primary"),
-        rich_button("Test 2", callback_data="run_t2", style="success"),
-        rich_button("Help", callback_data="run_help", style="danger"),
+        rich_button("Test 1", callback_data="run_t1", style=random_style()),
+        rich_button("Test 2", callback_data="run_t2", style=random_style()),
+        rich_button("Help", callback_data="run_help", style=random_style()),
     )
 
 
