@@ -39,6 +39,14 @@ if not (API_ID and API_HASH and BOT_TOKEN):
     raise SystemExit("API_ID, API_HASH and BOT_TOKEN are required.")
 
 # =========================
+# Event loop (must exist BEFORE the Clients are created,
+# because pyrogram's Client grabs the current loop in __init__)
+# =========================
+
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
+
+# =========================
 # Clients
 # =========================
 
@@ -228,5 +236,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
-    
+    loop.run_until_complete(main())
