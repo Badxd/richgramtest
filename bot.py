@@ -10,7 +10,13 @@ loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 
 from pyrogram import Client, filters, idle
-from pyrogram.types import InlineQueryResultArticle, InputRichMessageContent
+from pyrogram.types import (
+    InlineQueryResultArticle,
+    InputMediaPhoto,
+    InputRichMessage,
+    InputRichMessageContent,
+    InputRichMessageMedia,
+)
 
 from richgram import (
     RICH_AVAILABLE,
@@ -20,6 +26,7 @@ from richgram import (
     rich_edit,
     rich_footer,
     rich_heading,
+    rich_img,
     rich_kv_table,
     rich_list,
     rich_note,
@@ -41,6 +48,7 @@ API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 STRING_SESSION = os.getenv("STRING_SESSION")  # optional (userbot)
 EXTRA_OWNER_ID = os.getenv("OWNER_ID")        # optional
+LOGO_URL = os.getenv("LOGO_URL", "https://files.catbox.moe/rbcz4j.jpg")  # image for help menu / start
 
 if not (API_ID and API_HASH and BOT_TOKEN):
     raise SystemExit("API_ID, API_HASH and BOT_TOKEN are required.")
@@ -78,13 +86,55 @@ def is_owner(user_id) -> bool:
 # HTML (<tg-button>), so no reply_markup is needed.
 # =========================
 
-def inline_rich_article(result_id: str, title: str, description: str, html: str) -> InlineQueryResultArticle:
+def inline_rich_article(result_id: str, title: str, description: str, html: str, media=None) -> InlineQueryResultArticle:
     return InlineQueryResultArticle(
         id=result_id,
         title=title,
         description=description,
-        input_message_content=InputRichMessageContent(rich_message=_input_rich(html)),
+        input_message_content=InputRichMessageContent(rich_message=_input_rich(html, media=media)),
     )
+
+
+# =========================
+# Logo image inside rich messages
+# html:   <img src="tg://photo?id=logo"/>   +   media=[InputRichMessageMedia(id="logo", ...)]
+# LOGO_SOURCE starts as the URL; at startup it is replaced by a Telegram file_id
+# (bot uploads it once to the owner and deletes that message). If nothing works,
+# LOGO_OK becomes False and menus are sent without the image.
+# =========================
+
+LOGO_SOURCE = LOGO_URL
+LOGO_OK = True
+
+
+def logo_media():
+    if not LOGO_OK:
+        return None
+    return [InputRichMessageMedia(id="logo", media=InputMediaPhoto(LOGO_SOURCE))]
+
+
+def lg(html: str, logo: bool = True) -> str:
+    """Put the logo on top of a rich message."""
+    return (rich_img("tg://photo?id=logo") + html) if (logo and LOGO_OK) else html
+
+
+async def prepare_logo():
+    global LOGO_SOURCE, LOGO_OK
+    for oid in list(OWNER_IDS):
+        try:
+            m = await bot.send_photo(oid, LOGO_URL)
+            LOGO_SOURCE = m.photo.file_id
+            await m.delete()
+            print("Logo cached as file_id")
+            return
+        except Exception as e:
+            print(f"Logo cache via owner {oid} failed: {type(e).__name__}: {e}")
+    try:  # no owner chat available: try uploading straight from the URL
+        await _input_rich(lg("x"), media=logo_media()).write(client=bot)
+        print("Logo will be used from URL")
+    except Exception as e:
+        LOGO_OK = False
+        print(f"Logo disabled: {type(e).__name__}: {e}")
 
 
 # =========================
@@ -227,7 +277,7 @@ def start_kb() -> str:
 
 @bot.on_message(filters.command("start"))
 async def bot_start(_, message):
-    await rich_reply(message, start_text() + start_kb())
+    await rich_reply(message, lg(start_text() + start_kb()), media=logo_media())
 
 
 @bot.on_message(filters.command("richtest"))
@@ -242,7 +292,7 @@ async def bot_btntest(_, message):
 
 @bot.on_message(filters.command("help"))
 async def bot_help(_, message):
-    await rich_reply(message, help_top_text() + help_keyboard(0))
+    await rich_reply(message, lg(help_top_text() + help_keyboard(0)), media=logo_media())
 
 
 # =========================
@@ -263,7 +313,7 @@ async def cb_run_t2(_, cbq):
 
 @bot.on_callback_query(filters.regex(r"^run_help$"))
 async def cb_run_help(_, cbq):
-    await rich_reply(cbq, help_top_text() + help_keyboard(0))
+    await rich_reply(cbq, lg(help_top_text() + help_keyboard(0)), media=logo_media())
     await cbq.answer()
 
 
@@ -302,13 +352,13 @@ async def cb_help(_, cbq):
         key = m.group(1)
         if key not in PLUGINS:
             return await cbq.answer("Plugin nahi mila", show_alert=True)
-        await rich_edit(cbq, help_plugin_text(key) + help_plugin_kb())
+        await rich_edit(cbq, lg(help_plugin_text(key) + help_plugin_kb()), media=logo_media())
     elif m := re.match(r"help_prev\((\d+)\)$", data):
-        await rich_edit(cbq, help_top_text() + help_keyboard(int(m.group(1)) - 1))
+        await rich_edit(cbq, lg(help_top_text() + help_keyboard(int(m.group(1)) - 1)), media=logo_media())
     elif m := re.match(r"help_next\((\d+)\)$", data):
-        await rich_edit(cbq, help_top_text() + help_keyboard(int(m.group(1)) + 1))
+        await rich_edit(cbq, lg(help_top_text() + help_keyboard(int(m.group(1)) + 1)), media=logo_media())
     elif data == "help_back":
-        await rich_edit(cbq, help_top_text() + help_keyboard(0))
+        await rich_edit(cbq, lg(help_top_text() + help_keyboard(0)), media=logo_media())
     elif data == "help_close":
         if cbq.message:
             await cbq.message.delete()
@@ -332,14 +382,31 @@ async def on_inline(_, q):
     if not is_owner(q.from_user.id):
         return await q.answer([], cache_time=1)
 
-    items = {
-        "help": inline_rich_article("help", "Help menu", "Rich buttons help menu", help_top_text() + help_keyboard(0)),
-        "richtest": inline_rich_article("richtest", "Test 1", "Rich message", test1_text("userbot via inline")),
-        "btntest": inline_rich_article("btntest", "Test 2", "Rich buttons", test2_text("userbot via inline") + test2_kb()),
-    }
+    def build(logo: bool):
+        media = logo_media() if logo else None
+        return {
+            "help": inline_rich_article(
+                "help", "Help menu", "Rich buttons help menu",
+                lg(help_top_text() + help_keyboard(0), logo), media,
+            ),
+            "richtest": inline_rich_article("richtest", "Test 1", "Rich message", test1_text("userbot via inline")),
+            "btntest": inline_rich_article(
+                "btntest", "Test 2", "Rich buttons", test2_text("userbot via inline") + test2_kb()
+            ),
+        }
+
     key = q.query.strip().lower()
-    results = [items[key]] if key in items else list(items.values())
-    await q.answer(results, cache_time=0, is_personal=True)
+    try:
+        items = build(True)
+        await q.answer(
+            [items[key]] if key in items else list(items.values()), cache_time=0, is_personal=True
+        )
+    except Exception as e:  # image problem -> answer again without the logo
+        print(f"inline answer with logo failed ({type(e).__name__}: {e}), retrying without logo")
+        items = build(False)
+        await q.answer(
+            [items[key]] if key in items else list(items.values()), cache_time=0, is_personal=True
+        )
 
 
 # =========================
@@ -388,6 +455,7 @@ async def main():
     if user:
         await user.start()
         OWNER_IDS.add((await user.get_me()).id)
+    await prepare_logo()
     print(
         f"Bot started: @{BOT_USERNAME} | userbot: {'on' if user else 'off'} "
         f"| RICH_AVAILABLE={RICH_AVAILABLE} | owners={sorted(OWNER_IDS)}"
@@ -400,4 +468,3 @@ async def main():
 
 if __name__ == "__main__":
     loop.run_until_complete(main())
-                                         
