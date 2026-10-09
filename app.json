@@ -1,12 +1,11 @@
 {
-  "name": "DeepSeek Pyrogram Bot",
-  "description": "Telegram AI bot powered by DeepSeek",
+  "name": "Richgram Test Bot",
+  "description": "Telegram bot to test richgram rich messages and rich buttons (bot token + optional Pyrogram string session)",
   "repository": "https://github.com/Badmundaxd/deep",
   "keywords": [
     "telegram",
     "pyrogram",
-    "deepseek",
-    "ai",
+    "richgram",
     "bot"
   ],
   "env": {
@@ -22,9 +21,9 @@
       "description": "Telegram bot token from @BotFather",
       "required": true
     },
-    "GROQ_API_KEY": {
-      "description": "Groq API key",
-      "required": true
+    "STRING_SESSION": {
+      "description": "Pyrogram string session of a user account (optional, used for the userbot tests: .richtest and .btntest). Generate it with gen_session.py",
+      "required": false
     }
   },
   "buildpacks": [
