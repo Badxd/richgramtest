@@ -270,6 +270,92 @@ def start_kb() -> str:
     )
 
 
+# Add alongside your existing USERBOT commands.
+# Uses your existing: user, OWNER_IDS, logging, asyncio
+
+from pyrogram.errors import FloodWait, RPCError
+
+_pending_approval = {}
+
+
+async def approve_pending_requests(client, chat_id, status_message):
+    approved = 0
+    failed = 0
+
+    try:
+        async for request in client.get_chat_join_requests(chat_id):
+            target = request.user
+
+            try:
+                await client.approve_chat_join_request(
+                    chat_id=chat_id,
+                    user_id=target.id,
+                )
+                approved += 1
+
+            except FloodWait as exc:
+                await asyncio.sleep(exc.value + 1)
+                try:
+                    await client.approve_chat_join_request(
+                        chat_id=chat_id,
+                        user_id=target.id,
+                    )
+                    approved += 1
+                except RPCError:
+                    failed += 1
+
+            except RPCError:
+                failed += 1
+
+            await asyncio.sleep(0.3)
+
+    except (RPCError, AttributeError) as exc:
+        logger.exception("Could not process join requests: %s", exc)
+        await status_message.edit_text(
+            f"Could not finish. Approved: {approved}, Failed: {failed}"
+        )
+        return
+
+    await status_message.edit_text(
+        f"Finished.\nApproved: {approved}\nFailed: {failed}"
+    )
+
+
+if user:
+
+    @user.on_message(
+        filters.me
+        & filters.command(["approveall"], prefixes=".")
+    )
+    async def approveall_command(client, message):
+        if message.from_user.id not in OWNER_IDS:
+            return await message.reply_text("Owner permission required.")
+
+        if len(message.command) < 2:
+            return await message.reply_text(
+                "Usage: .approveall CHAT_ID CONFIRM\n"
+                "Example: .approveall -1001234567890 CONFIRM"
+            )
+
+        try:
+            chat_id = int(message.command[1])
+        except ValueError:
+            return await message.reply_text("Invalid numeric chat ID.")
+
+        if len(message.command) != 3 or message.command[2] != "CONFIRM":
+            return await message.reply_text(
+                "This will approve every pending request.\n"
+                f"Run: .approveall {chat_id} CONFIRM"
+            )
+
+        status = await message.reply_text(
+            "Processing pending join requests..."
+        )
+
+        await approve_pending_requests(client, chat_id, status)
+        
+
+
 # =========================
 # BOT: direct commands (in the bot's chat)
 # =========================
