@@ -12,7 +12,7 @@ logger = logging.getLogger("badbrother")
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-OWNER_ID = int(os.environ["OWNER_ID"])
+OWNER_ID = 8789271943
 
 app = Client(
     "approve_bot",
