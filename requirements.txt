@@ -1,4 +1,4 @@
-pyrofork
+kurigram
 tgcrypto
 openai
 python-dotenv
