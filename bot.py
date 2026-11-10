@@ -5,6 +5,7 @@ import os
 import random
 import re
 import time
+from datetime import datetime
 
 # Event loop must exist BEFORE the Clients are created
 # (pyrogram's Client grabs the current loop in __init__).
@@ -279,11 +280,16 @@ def start_text() -> str:
             "Userbot: <code>.help</code> <code>.richtest</code> <code>.btntest</code>" if user
             else "Userbot off (STRING_SESSION nahi hai)",
             "--- Bot API 10.4 widgets ---",
+            "/widgetmenu - widget picker (buttons)",
             "/widgettest - send a basic HTML widget",
             "/widgetshared - send + re-send + edit a shared widget",
             "/widgetedit - edit the last widget's state",
             "/widgetwallet - build a sample TON wallet answer (no send)",
             "/widgetlog - last widget_query/shared_widget_query received",
+            "/lifegame - Conway's Game of Life widget",
+            "/widgetweather &lt;place&gt; - live weather widget (Open-Meteo)",
+            "/draw - shared drawing board widget",
+            "/drawclear - clear this chat's drawing board",
         ])
     )
 
@@ -668,12 +674,479 @@ async def bot_widgetlog(_, message):
     )
 
 
+# --- widget menu -----------------------------------------------------
+
+def widget_menu_text() -> str:
+    return (
+        rich_heading("Widgets", level=3)
+        + rich_list([
+            "<b>Ping test</b> - a tiny widget with a button (sendWidget)",
+            "<b>Game of Life</b> - Conway's cellular automaton, runs client-side",
+            "<b>Weather</b> - live forecast card (ask for a place after tapping)",
+            "<b>Shared board</b> - draw together, synced via a shared widget",
+        ])
+    )
+
+
+def widget_menu_kb() -> str:
+    return rich_button_row(
+        rich_button("Ping test", callback_data="wmenu_ping"),
+        rich_button("Game of Life", callback_data="wmenu_life"),
+    ) + rich_button_row(
+        rich_button("Weather", callback_data="wmenu_weather"),
+        rich_button("Shared board", callback_data="wmenu_draw"),
+    )
+
+
+@bot.on_message(filters.command("widgetmenu") & filters.create(lambda _, __, m: is_owner(m.from_user.id)))
+async def bot_widgetmenu(_, message):
+    await rich_reply(message, widget_menu_text() + widget_menu_kb())
+
+
+@bot.on_callback_query(filters.regex(r"^wmenu_") & filters.create(lambda _, __, cbq: is_owner(cbq.from_user.id)))
+async def cb_widget_menu(_, cbq):
+    action = cbq.data.split("_", 1)[1]
+    chat_id = cbq.message.chat.id
+    await cbq.answer()
+    if action == "ping":
+        await bot_widgettest(_, cbq.message)
+    elif action == "life":
+        await run_lifegame(chat_id)
+    elif action == "weather":
+        await cbq.message.reply_text("Which place? Send: /widgetweather <place>")
+    elif action == "draw":
+        await run_draw(chat_id)
+
+
+# --- Game of Life (self-contained, no widget_query round trip needed) ---
+
+GAME_OF_LIFE_HTML = """<!doctype html><html><head><meta charset="utf-8">
+<style>
+body{margin:0;padding:10px;font-family:sans-serif;
+background:var(--tg-theme-bg-color,#0e1e17);color:var(--tg-theme-text-color,#fff)}
+#hd{display:flex;justify-content:space-between;font-size:12px;opacity:.8;margin-bottom:6px}
+canvas{width:100%;display:block;background:#123;border-radius:6px}
+#row{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+button{flex:1;min-width:70px;padding:8px 4px;border:0;border-radius:8px;font-size:12px;
+background:var(--tg-theme-button-color,#2ea6ff);color:var(--tg-theme-button-text-color,#fff)}
+button.off{opacity:.55}
+</style></head><body>
+<div id="hd"><span>Game of Life</span><span id="st">gen 0 - alive 0</span></div>
+<canvas id="c" width="360" height="234"></canvas>
+<div id="row">
+<button id="bp">Pause</button>
+<button id="bs">Step</button>
+<button id="bx">x1</button>
+<button id="bd">Dice</button>
+<button id="bg">Gosper gun</button>
+</div>
+<script>
+(function(){
+var COLS=40,ROWS=26,cell=9;
+var cv=document.getElementById('c'),ctx=cv.getContext('2d');
+var grid=new Uint8Array(COLS*ROWS);
+var gen=0,running=true,speed=1,acc=0,last=0;
+function idx(x,y){return ((y+ROWS)%ROWS)*COLS+((x+COLS)%COLS);}
+function randomize(){
+  for(var i=0;i<grid.length;i++) grid[i]=Math.random()<0.25?1:0;
+  gen=0; draw();
+}
+function clearGrid(){ grid.fill(0); gen=0; }
+function placeGosperGun(){
+  clearGrid();
+  var cells=[[0,4],[0,5],[1,4],[1,5],[10,4],[10,5],[10,6],[11,3],[11,7],
+  [12,2],[12,8],[13,2],[13,8],[14,5],[15,3],[15,7],[16,4],[16,5],[16,6],
+  [17,5],[20,2],[20,3],[20,4],[21,2],[21,3],[21,4],[22,1],[22,5],
+  [24,0],[24,1],[24,5],[24,6],[34,2],[34,3],[35,2],[35,3]];
+  for(var i=0;i<cells.length;i++) grid[idx(cells[i][0]+2,cells[i][1]+2)]=1;
+  draw();
+}
+function step(){
+  var next=new Uint8Array(COLS*ROWS);
+  for(var y=0;y<ROWS;y++) for(var x=0;x<COLS;x++){
+    var n=grid[idx(x-1,y-1)]+grid[idx(x,y-1)]+grid[idx(x+1,y-1)]
+         +grid[idx(x-1,y)]              +grid[idx(x+1,y)]
+         +grid[idx(x-1,y+1)]+grid[idx(x,y+1)]+grid[idx(x+1,y+1)];
+    var alive=grid[idx(x,y)];
+    next[idx(x,y)]=(alive&&(n===2||n===3))||(!alive&&n===3)?1:0;
+  }
+  grid=next; gen++; draw();
+}
+function draw(){
+  ctx.fillStyle='#123'; ctx.fillRect(0,0,cv.width,cv.height);
+  ctx.fillStyle='#bff';
+  var alive=0;
+  for(var y=0;y<ROWS;y++) for(var x=0;x<COLS;x++) if(grid[idx(x,y)]){
+    ctx.fillRect(x*cell,y*cell,cell-1,cell-1); alive++;
+  }
+  document.getElementById('st').textContent='gen '+gen+' - alive '+alive;
+}
+function loop(ts){
+  if(running){
+    if(!last) last=ts;
+    acc+=ts-last; last=ts;
+    var interval=220/speed;
+    if(acc>interval){ acc=0; step(); }
+  } else { last=0; }
+  requestAnimationFrame(loop);
+}
+document.getElementById('bp').onclick=function(e){
+  running=!running; e.target.textContent=running?'Pause':'Resume';
+  e.target.classList.toggle('off', !running);
+};
+document.getElementById('bs').onclick=function(){ running=false;
+  document.getElementById('bp').textContent='Resume';
+  document.getElementById('bp').classList.add('off'); step(); };
+document.getElementById('bx').onclick=function(e){
+  speed = speed>=8?1:speed*2; e.target.textContent='x'+speed; };
+document.getElementById('bd').onclick=randomize;
+document.getElementById('bg').onclick=placeGosperGun;
+randomize();
+requestAnimationFrame(loop);
+if (window.TelegramWidget && window.TelegramWidget.ready) window.TelegramWidget.ready();
+})();
+</script></body></html>"""
+
+
+async def run_lifegame(chat_id):
+    try:
+        await send_widget(bot, chat_id, GAME_OF_LIFE_HTML, width=380, height=330)
+    except WidgetAPIError as e:
+        await bot.send_message(chat_id, f"sendWidget rejected: {e}")
+    except Exception as e:
+        await bot.send_message(chat_id, f"Game of Life widget failed: {type(e).__name__}: {e}")
+
+
+@bot.on_message(filters.command("lifegame") & filters.create(lambda _, __, m: is_owner(m.from_user.id)))
+async def bot_lifegame(_, message):
+    await run_lifegame(message.chat.id)
+
+
+# --- Weather (static, server-rendered; no widget_query needed) ---------
+
+_WMO = {
+    0: ("clear sky", "+"), 1: ("mainly clear", "+"), 2: ("partly cloudy", "~"),
+    3: ("overcast", "="), 45: ("fog", "="), 48: ("depositing rime fog", "="),
+    51: ("light drizzle", "."), 53: ("drizzle", "."), 55: ("dense drizzle", "."),
+    56: ("freezing drizzle", "."), 57: ("dense freezing drizzle", "."),
+    61: ("slight rain", "/"), 63: ("rain", "/"), 65: ("heavy rain", "/"),
+    66: ("freezing rain", "/"), 67: ("heavy freezing rain", "/"),
+    71: ("slight snow", "*"), 73: ("snow", "*"), 75: ("heavy snow", "*"),
+    77: ("snow grains", "*"), 80: ("slight rain showers", "/"),
+    81: ("rain showers", "/"), 82: ("violent rain showers", "/"),
+    85: ("slight snow showers", "*"), 86: ("heavy snow showers", "*"),
+    95: ("thunderstorm", "!"), 96: ("thunderstorm, slight hail", "!"),
+    99: ("thunderstorm, heavy hail", "!"),
+}
+
+
+def _wmo_desc(code):
+    return _WMO.get(code, ("unknown", "?"))[0]
+
+
+async def fetch_weather_card_html(place: str):
+    """Geocode `place` and build a static weather widget via Open-Meteo
+    (free, no API key). Returns (html, resolved_label).
+
+    Not exercised against the live Open-Meteo API from the environment
+    that wrote this code — its outbound network is allowlisted to package
+    registries only, so api.open-meteo.com was unreachable from there.
+    The request/response shapes follow Open-Meteo's documented API as of
+    this writing; if the shape has drifted, the exception raised here
+    carries whatever Open-Meteo's own response said, rather than a
+    swallowed/generic failure.
+    """
+    import httpx
+
+    async with httpx.AsyncClient(timeout=15.0) as http:
+        geo_resp = await http.get(
+            "https://geocoding-api.open-meteo.com/v1/search",
+            params={"name": place, "count": 1, "language": "en", "format": "json"},
+        )
+        geo = geo_resp.json()
+        results = geo.get("results") or []
+        if not results:
+            raise RuntimeError(f"Open-Meteo couldn't find a place named {place!r}")
+        loc = results[0]
+        lat, lon = loc["latitude"], loc["longitude"]
+        label = loc.get("name", place)
+        if loc.get("admin1") and loc["admin1"] != label:
+            label += f", {loc['admin1']}"
+
+        fc_resp = await http.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": lat,
+                "longitude": lon,
+                "current": "temperature_2m,apparent_temperature,relative_humidity_2m,"
+                           "weather_code,wind_speed_10m,surface_pressure",
+                "hourly": "temperature_2m,weather_code",
+                "daily": "weather_code,temperature_2m_max,temperature_2m_min,sunset",
+                "wind_speed_unit": "ms",
+                "timezone": "auto",
+                "forecast_days": 8,
+            },
+        )
+        fc = fc_resp.json()
+        if "current" not in fc:
+            raise RuntimeError(f"Open-Meteo forecast error: {fc.get('reason', fc)}")
+
+    cur = fc["current"]
+    daily = fc["daily"]
+    hourly = fc["hourly"]
+
+    temp = round(cur["temperature_2m"])
+    feels = round(cur["apparent_temperature"])
+    desc = _wmo_desc(cur["weather_code"])
+    wind = cur["wind_speed_10m"]
+    humidity = cur["relative_humidity_2m"]
+    pressure_mmhg = round(cur["surface_pressure"] * 0.750062)
+    sunset_today = daily["sunset"][0][-5:] if daily.get("sunset") else "?"
+
+    hourly_times = hourly.get("time", [])
+    now_iso = cur.get("time", "")
+    start = 0
+    for i, t in enumerate(hourly_times):
+        if t >= now_iso:
+            start = i
+            break
+    strip = []
+    for i in range(start, min(start + 24, len(hourly_times)), 3):
+        hh = hourly_times[i][11:13]
+        strip.append(
+            f'<div class="hcol"><span>{hh}</span>'
+            f'<b>{round(hourly["temperature_2m"][i])}</b></div>'
+        )
+
+    day_rows = []
+    day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    for i in range(min(7, len(daily.get("time", [])))):
+        d = daily["time"][i]
+        try:
+            wd = day_names[datetime.fromisoformat(d).weekday()]
+        except Exception:
+            wd = d[5:]
+        wd = "Today" if i == 0 else wd
+        lo = round(daily["temperature_2m_min"][i])
+        hi = round(daily["temperature_2m_max"][i])
+        day_rows.append(
+            f'<div class="drow"><span class="dname">{wd}</span>'
+            f'<span class="dlo">{lo}</span>'
+            f'<span class="dbar"></span>'
+            f'<span class="dhi">{hi}</span></div>'
+        )
+
+    html = f"""<!doctype html><html><head><meta charset="utf-8">
+<style>
+body{{margin:0;padding:12px;font-family:sans-serif;
+background:linear-gradient(#1b4a7a,#123);color:#fff}}
+#top{{display:flex;justify-content:space-between;font-size:13px;opacity:.85}}
+#temp{{font-size:42px;font-weight:700;margin:4px 0}}
+#desc{{font-size:13px;opacity:.9}}
+#tiles{{display:flex;gap:6px;margin:10px 0}}
+.tile{{flex:1;background:rgba(255,255,255,.08);border-radius:8px;padding:6px;
+text-align:center;font-size:11px}}
+.tile b{{display:block;font-size:14px}}
+#strip{{display:flex;gap:4px;overflow-x:auto;margin:10px 0;padding-bottom:4px}}
+.hcol{{flex:0 0 auto;text-align:center;font-size:11px;opacity:.9;min-width:28px}}
+.drow{{display:flex;align-items:center;gap:8px;font-size:12px;padding:3px 0}}
+.dname{{flex:0 0 42px}}
+.dlo{{flex:0 0 22px;opacity:.7;text-align:right}}
+.dbar{{flex:1;height:4px;border-radius:2px;
+background:linear-gradient(90deg,#9fe,#fc6)}}
+.dhi{{flex:0 0 22px;text-align:right}}
+</style></head><body>
+<div id="top"><b>{label}</b><span>via Open-Meteo</span></div>
+<div id="temp">{temp}&deg;</div>
+<div id="desc">{desc} - feels like {feels}&deg;</div>
+<div id="tiles">
+<div class="tile">Wind<b>{wind:.1f} m/s</b></div>
+<div class="tile">Humidity<b>{humidity}%</b></div>
+<div class="tile">Pressure<b>{pressure_mmhg} mmHg</b></div>
+<div class="tile">Sunset<b>{sunset_today}</b></div>
+</div>
+<div id="strip">{''.join(strip)}</div>
+<div id="days">{''.join(day_rows)}</div>
+</body></html>"""
+    return html, label
+
+
+@bot.on_message(filters.command("widgetweather") & filters.create(lambda _, __, m: is_owner(m.from_user.id)))
+async def bot_widgetweather(_, message):
+    place = message.text.split(None, 1)[1].strip() if len(message.text.split(None, 1)) > 1 else None
+    if not place:
+        return await message.reply_text("Usage: /widgetweather <place>")
+    status = await message.reply_text(f"Fetching weather for {place} from Open-Meteo...")
+    try:
+        html, label = await fetch_weather_card_html(place)
+        validate_widget_html(html)
+    except Exception as e:
+        return await status.edit_text(f"Weather widget failed: {type(e).__name__}: {e}")
+    try:
+        await send_widget(bot, message.chat.id, html)
+        await status.delete()
+    except WidgetAPIError as e:
+        await status.edit_text(f"sendWidget rejected by Telegram: {e}")
+    except Exception as e:
+        await status.edit_text(f"sendWidget failed: {type(e).__name__}: {e}")
+
+
+# --- Shared drawing board (needs widget_query delivery to work live) ----
+
+DRAW_COLS, DRAW_ROWS, DRAW_CELL = 48, 32, 7
+DRAW_MAX_POINTS = 600
+DRAW_BOARDS = {}         # widget_id -> [[x, y], ...]
+DRAW_WIDGET_BY_CHAT = {}  # chat_id -> widget_id
+
+DRAW_WIDGET_HTML = """<!doctype html><html><head><meta charset="utf-8">
+<style>
+body{margin:0;padding:8px;font-family:sans-serif;
+background:var(--tg-theme-bg-color,#123);color:var(--tg-theme-text-color,#fff)}
+#hd{font-size:12px;opacity:.8;margin-bottom:6px}
+canvas{width:100%;display:block;background:#1a3b2c;border-radius:6px;touch-action:none}
+</style></head><body>
+<div id="hd">Shared board - draw, everyone watching sees it</div>
+<canvas id="c" width="336" height="224"></canvas>
+<script>
+(function(){
+var COLS=48,ROWS=32,cell=7;
+var cv=document.getElementById('c'),ctx=cv.getContext('2d');
+var have={};
+function key(x,y){return x+','+y;}
+function plot(x,y){
+  if(x<0||y<0||x>=COLS||y>=ROWS) return;
+  var k=key(x,y);
+  if(have[k]) return;
+  have[k]=1;
+  ctx.fillStyle='#fff';
+  ctx.fillRect(x*cell,y*cell,cell-1,cell-1);
+}
+function renderAll(points){
+  ctx.fillStyle='#1a3b2c'; ctx.fillRect(0,0,cv.width,cv.height);
+  have={};
+  (points||[]).forEach(function(p){ plot(p[0],p[1]); });
+}
+function pointFromEvent(e){
+  var r=cv.getBoundingClientRect();
+  var cx=(e.touches?e.touches[0].clientX:e.clientX)-r.left;
+  var cy=(e.touches?e.touches[0].clientY:e.clientY)-r.top;
+  var sx=cv.width/r.width, sy=cv.height/r.height;
+  return [Math.floor(cx*sx/cell), Math.floor(cy*sy/cell)];
+}
+var drawing=false;
+function onDown(e){ drawing=true; onMove(e); }
+function onUp(){ drawing=false; }
+function onMove(e){
+  if(!drawing) return;
+  e.preventDefault();
+  var p=pointFromEvent(e);
+  plot(p[0],p[1]);
+  try{
+    window.TelegramWidget.request(p[0]+','+p[1]).catch(function(){});
+  }catch(err){}
+}
+cv.addEventListener('mousedown', onDown);
+cv.addEventListener('mousemove', onMove);
+window.addEventListener('mouseup', onUp);
+cv.addEventListener('touchstart', onDown, {passive:false});
+cv.addEventListener('touchmove', onMove, {passive:false});
+cv.addEventListener('touchend', onUp);
+
+var lastSerialized='';
+function poll(){
+  try{
+    var pd=window.TelegramWidget.publicData;
+    if(pd && pd.points){
+      var s=JSON.stringify(pd.points);
+      if(s!==lastSerialized){ lastSerialized=s; renderAll(pd.points); }
+    }
+  }catch(err){}
+}
+setInterval(poll, 1500);
+poll();
+if (window.TelegramWidget && window.TelegramWidget.ready) window.TelegramWidget.ready();
+})();
+</script></body></html>"""
+
+
+async def run_draw(chat_id):
+    existing_widget_id = DRAW_WIDGET_BY_CHAT.get(chat_id)
+    try:
+        if existing_widget_id is None:
+            result = await send_widget(
+                bot, chat_id, DRAW_WIDGET_HTML, is_shared=True, allow_queries=True,
+                width=350, height=260,
+            )
+            widget_id = result.get("widget_id") if isinstance(result, dict) else getattr(result, "widget_id", None)
+            if not widget_id:
+                return await bot.send_message(chat_id, f"sendWidget didn't return a widget_id: {result!r}")
+            DRAW_WIDGET_BY_CHAT[chat_id] = widget_id
+            DRAW_BOARDS[widget_id] = []
+            await edit_shared_widget_data(bot, widget_id, public_data={"points": []}, cache_time=5)
+        else:
+            await send_shared_widget(bot, chat_id, existing_widget_id)
+    except WidgetAPIError as e:
+        await bot.send_message(chat_id, f"Draw widget failed: {e}")
+    except Exception as e:
+        await bot.send_message(chat_id, f"Draw widget failed: {type(e).__name__}: {e}")
+
+
+@bot.on_message(filters.command("draw") & filters.create(lambda _, __, m: is_owner(m.from_user.id)))
+async def bot_draw(_, message):
+    await run_draw(message.chat.id)
+
+
+@bot.on_message(filters.command("drawclear") & filters.create(lambda _, __, m: is_owner(m.from_user.id)))
+async def bot_drawclear(_, message):
+    widget_id = DRAW_WIDGET_BY_CHAT.get(message.chat.id)
+    if not widget_id:
+        return await message.reply_text("No drawing board in this chat yet - run /draw first.")
+    DRAW_BOARDS[widget_id] = []
+    try:
+        await edit_shared_widget_data(bot, widget_id, public_data={"points": []}, cache_time=5)
+        await message.reply_text("Board cleared.")
+    except Exception as e:
+        await message.reply_text(f"Clear failed: {type(e).__name__}: {e}")
+
+
+async def handle_draw_query(query) -> bool:
+    """If `query` is a point tapped/dragged on a known drawing board, apply
+    it and push the updated board to every viewer. Returns True if it was
+    handled (so the generic ping-pong reply below is skipped for it).
+    """
+    if query.widget_id not in DRAW_BOARDS or not query.data:
+        return False
+    try:
+        cx_s, cy_s = query.data.decode("utf-8").split(",")
+        cx, cy = int(cx_s), int(cy_s)
+    except Exception:
+        return False
+    if not (0 <= cx < DRAW_COLS and 0 <= cy < DRAW_ROWS):
+        return True
+
+    points = DRAW_BOARDS[query.widget_id]
+    points.append([cx, cy])
+    del points[:-DRAW_MAX_POINTS]
+
+    if isinstance(query, WidgetQuery):
+        try:
+            await answer_widget_query(bot, query.id, data="ok")
+        except Exception as e:
+            print(f"[draw] answer failed: {type(e).__name__}: {e}")
+    try:
+        await edit_shared_widget_data(bot, query.widget_id, public_data={"points": points}, cache_time=5)
+    except Exception as e:
+        print(f"[draw] edit_shared_widget_data failed: {type(e).__name__}: {e}")
+    return True
+
+
 async def handle_widget_query(query):
     """Called by widget_query_poller() for every parsed widget_query /
-    shared_widget_query. Logs it for /widgetlog and, for a plain
-    (non-wallet) WidgetQuery with allow_queries data, answers it so the
-    widget's own TelegramWidget.request(...) promise resolves — this is
-    what basic_widget_html()'s "Ping the bot" button is waiting on.
+    shared_widget_query. Logs it for /widgetlog, routes drawing-board
+    points to handle_draw_query, and otherwise answers a plain
+    (non-wallet) WidgetQuery so the widget's own
+    TelegramWidget.request(...) promise resolves — this is what
+    basic_widget_html()'s "Ping the bot" button is waiting on.
     """
     entry = {
         "at": time.strftime("%H:%M:%S"),
@@ -684,6 +1157,9 @@ async def handle_widget_query(query):
     WIDGET_QUERY_LOG.append(entry)
     del WIDGET_QUERY_LOG[:-WIDGET_QUERY_LOG_MAX]
     print(f"[widget_query] {entry}")
+
+    if await handle_draw_query(query):
+        return
 
     if isinstance(query, WidgetQuery) and query.wallet is None:
         try:
