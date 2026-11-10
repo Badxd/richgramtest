@@ -2,4 +2,4 @@ pyrofork
 tgcrypto
 openai
 python-dotenv
-git+https://github.com/Badmunda05/richgram
+httpx
