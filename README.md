@@ -65,6 +65,20 @@ whole time (your widget rendered as a real interactive card, not plain
 text) — the bug was purely in how the bot read the id back out of a
 successful response.
 
+### Less clutter, more card
+
+Per feedback, commands that already send a widget (`/widgettest`,
+`/widgetshared`) no longer also send a separate confirmation text message
+after it — the widget itself is the output now, nothing extra underneath
+it. `/widgetedit` and `/widgetwallet` still reply with text, since they
+don't send a new widget of their own to look at.
+
+The widgets themselves (`/ping`, `/widgettest`, `/widgetshared`) were also
+restyled to a dark card with a gold accent — rounded corners, pill
+buttons, monospace accents — closer to the kind of polished widget look
+other bots show, instead of a plain white box. `/lifegame` and `/draw`
+keep their own canvas-based look since they're a different kind of UI.
+
 ### What's actually confirmed vs. still open
 
 Verified by rendering the widget HTML in a real headless browser while
@@ -96,30 +110,31 @@ text):
   bot at all. Your last `/widgetlog` check (after tapping `/widgettest`'s
   button) still showed nothing — see the open question below.
 
-### The open `widget_query` delivery question
+### `widget_query` delivery — now confirmed working
 
-`/widgetlog` showing nothing after a tap means one of two things, and I
-can't tell which from here (no live Telegram access):
+This was the open question in earlier versions of this README. It's
+resolved: your `/widgetlog` test, after drawing on `/draw`'s board,
+showed real entries —
 
-1. **The poller (`widget_query_poller` in `bot.py`) is erroring.** It
-   prints `[widget_query_poller] ...` on every failure — check your
-   terminal for that.
-2. **Telegram isn't delivering these updates over `getUpdates` at all**
-   for a bot that's also connected over MTProto (how Pyrogram/Kurigram
-   connects). I flagged this as an unconfirmed assumption when I first
-   wrote the poller — I don't actually know how Telegram routes a new
-   update type like `widget_query` for an MTProto-connected bot, and
-   there's no way for me to check that from where I'm running.
+```
+widget_query widget_id=6314070046490494560 data='28,14'
+widget_query widget_id=6314070046490494560 data='9,17'
+widget_query widget_id=6314070046490494560 data='43,13'
+```
 
-If your terminal shows the poller running cleanly (periodic `getUpdates`
-calls succeeding, just with an empty `result`) and `/widgetlog` still
-never shows anything even after tapping `/widgettest`'s button, that
-points at (2) — and the fix would likely be running a webhook instead of
-long-polling, or using whatever mechanism the official widgets guide
-actually documents for receiving these (it describes the update types but
-I did not find it saying which delivery mechanism — polling vs. webhook
-vs. something MTProto-native — a bot should expect them through). Paste
-me the terminal output and I'll dig further.
+— those `data` values are exactly the `"x,y"` point strings `/draw`'s
+canvas sends on each stroke. So: the `getUpdates` poller works, Telegram
+does deliver `widget_query` to this bot even while it's connected over
+MTProto, and `/draw`'s server side (receiving a point, storing it,
+pushing it back out with `editSharedWidgetData`) is getting real data to
+work with. Whether every viewer's canvas visibly updates in sync is the
+next thing to check — if it doesn't, that's a bug in how the widget reads
+back `publicData`, not in delivery.
+
+`/widgettest`'s button didn't show up in that same log — that's a
+separate widget (a different `widget_id` each time it's sent, since
+`/widgettest` isn't shared) and may just not have been tapped in that
+test run, not a sign anything is broken.
 
 ### Why there's a second update loop
 

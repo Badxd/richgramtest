@@ -519,20 +519,30 @@ def basic_widget_html(label: str = "richgram") -> str:
 
     Kept deliberately tiny — well under the 4096-byte (zlib level 9)
     compressed limit richgram.widgets.validate_widget_html enforces before
-    any network call is made.
+    any network call is made. Styled as a dark card with a gold accent to
+    match the reference screenshot (dark navy background, gold pill
+    buttons, monospace accents) rather than a plain white box.
     """
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <style>
-body{{font-family:sans-serif;margin:0;padding:14px;
-background:var(--tg-theme-bg-color,#fff);color:var(--tg-theme-text-color,#000)}}
-button{{padding:8px 16px;border:0;border-radius:10px;font-size:14px;
-background:var(--tg-theme-button-color,#2ea6ff);
-color:var(--tg-theme-button-text-color,#fff)}}
-#out{{margin-top:10px;font-size:13px;opacity:.8}}
+:root{{color-scheme:dark}}
+body{{font-family:-apple-system,system-ui,sans-serif;margin:0;padding:16px;
+background:var(--tg-theme-bg-color,#141a2e);
+color:var(--tg-theme-text-color,#f0e6d2)}}
+.card{{border:1px solid #d4af7a55;border-radius:14px;padding:14px}}
+.title{{font-size:13px;letter-spacing:.08em;text-transform:uppercase;
+color:#d4af7a;margin:0 0 10px}}
+button{{padding:9px 20px;border:0;border-radius:999px;font-size:14px;
+font-weight:600;cursor:pointer;
+background:var(--tg-theme-button-color,#d4af7a);
+color:var(--tg-theme-button-text-color,#1a1206)}}
+#out{{margin-top:12px;font-size:12px;opacity:.75;font-family:monospace}}
 </style></head><body>
-<p><b>{label}</b> &mdash; Bot API 10.4 widget</p>
+<div class="card">
+<p class="title">{label} &middot; widget</p>
 <button onclick="ping()">Ping the bot</button>
 <p id="out">(not pinged yet)</p>
+</div>
 <script>
 function ping() {{
   var out = document.getElementById('out');
@@ -554,14 +564,23 @@ if (window.TelegramWidget && window.TelegramWidget.ready) {{
 
 def shared_widget_html(count: int) -> str:
     return f"""<!doctype html><html><head><meta charset="utf-8">
-<style>body{{font-family:sans-serif;padding:14px;
-background:var(--tg-theme-bg-color,#fff);color:var(--tg-theme-text-color,#000)}}
+<style>
+:root{{color-scheme:dark}}
+body{{font-family:-apple-system,system-ui,sans-serif;margin:0;padding:16px;
+background:var(--tg-theme-bg-color,#141a2e);
+color:var(--tg-theme-text-color,#f0e6d2)}}
+.card{{border:1px solid #d4af7a55;border-radius:14px;padding:14px}}
+.title{{font-size:13px;letter-spacing:.08em;text-transform:uppercase;
+color:#d4af7a;margin:0 0 10px}}
+.count{{font-family:monospace;font-size:28px;color:#d4af7a}}
+.note{{opacity:.7;font-size:11px;margin-top:10px}}
 </style></head><body>
-<p>Shared widget test</p>
-<p>public_data count: <b>{count}</b></p>
-<p style="opacity:.7;font-size:12px">Everyone who sees this (re)sent widget
-sees the same count — editSharedWidgetData updates it for all of them at
-once.</p>
+<div class="card">
+<p class="title">Shared widget</p>
+<p class="count">{count}</p>
+<p class="note">Every chat with this widget open sees the same count —
+editSharedWidgetData updates it for all of them at once.</p>
+</div>
 </body></html>"""
 
 
@@ -581,14 +600,6 @@ async def bot_widgettest(_, message):
         return await message.reply_text(f"sendWidget failed: {type(e).__name__}: {e}")
     message_id = result.get("message_id") if isinstance(result, dict) else getattr(result, "message_id", None)
     LAST_WIDGET[message.chat.id] = {"message_id": message_id, "clicks": 0}
-    await message.reply_text(
-        f"Widget sent (message_id={message_id}, "
-        f"{widget_html_compressed_size(html)} bytes compressed).\n"
-        "Tap the button inside it, then check /widgetlog — if your "
-        "Telegram client supports widgets and this bot account has them "
-        "enabled, a widget_query should show up there within a second or "
-        "two of the tap."
-    )
 
 
 @bot.on_message(filters.command("widgetshared") & filters.create(lambda _, __, m: is_owner(m.from_user.id)))
@@ -607,21 +618,13 @@ async def bot_widgetshared(_, message):
                     "the response shape again."
                 )
             LAST_SHARED_WIDGET[message.chat.id] = {"widget_id": widget_id, "clicks": 0}
-            return await message.reply_text(
-                f"Shared widget created (widget_id={widget_id}). Run /widgetshared "
-                "again to re-send it by id and bump its shared count."
-            )
+            return
 
         widget_id = state["widget_id"]
         state["clicks"] += 1
         await send_shared_widget(bot, message.chat.id, widget_id)
         await edit_shared_widget_data(
             bot, widget_id, public_data={"count": state["clicks"]}, cache_time=5
-        )
-        await message.reply_text(
-            f"Re-sent shared widget {widget_id} and bumped its public_data "
-            f"count to {state['clicks']} via editSharedWidgetData — every "
-            "copy of this shared widget should update."
         )
     except WidgetAPIError as e:
         await message.reply_text(f"Widget API call rejected: {e}")
@@ -721,13 +724,18 @@ def widget_menu_kb() -> str:
 
 PING_WIDGET_HTML = """<!doctype html><html><head><meta charset="utf-8">
 <style>
-body{margin:0;padding:18px;font-family:sans-serif;text-align:center;
-background:var(--tg-theme-bg-color,#123);color:var(--tg-theme-text-color,#fff)}
-h1{font-size:30px;margin:4px 0}
-p{opacity:.7;font-size:12px;margin:0}
+:root{color-scheme:dark}
+body{margin:0;padding:20px;font-family:-apple-system,system-ui,sans-serif;
+text-align:center;background:var(--tg-theme-bg-color,#141a2e);
+color:var(--tg-theme-text-color,#f0e6d2)}
+.card{border:1px solid #d4af7a55;border-radius:14px;padding:16px}
+h1{font-size:28px;margin:4px 0;color:#d4af7a;letter-spacing:.04em}
+p{opacity:.65;font-size:11px;margin:4px 0 0;font-family:monospace}
 </style></head><body>
+<div class="card">
 <h1>pong</h1>
-<p>richgram - Bot API 10.4 widget</p>
+<p>richgram &middot; widget</p>
+</div>
 <script>
 if (window.TelegramWidget && window.TelegramWidget.ready) window.TelegramWidget.ready();
 </script></body></html>"""
