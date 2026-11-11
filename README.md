@@ -30,6 +30,12 @@ rich-message ones:
   via `TelegramWidget.request(...)`, the bot appends it to that board's
   state and pushes the update to every viewer with
   `editSharedWidgetData`. `/drawclear` empties a chat's board.
+- `/ping` — the smallest possible widget: static HTML, no button, no
+  `allow_queries`, no network call of its own. Added in place of the
+  weather menu slot — if this doesn't render as a widget, nothing
+  downstream (buttons, `widget_query` delivery, Open-Meteo, ...) is the
+  problem; if it does, `sendWidget` itself is confirmed fine and any
+  other widget failing is a bug in that specific command.
 - `/widgetshared` — the original generic shared-widget demo (create →
   re-send by id → bump a counter via `editSharedWidgetData`).
 - `/widgetedit` — edits the last `/widgettest` message's state
@@ -39,6 +45,25 @@ rich-message ones:
   produces.
 - `/widgetlog` — shows the last `widget_query`/`shared_widget_query`
   updates the bot has seen.
+
+### Fixed: `sendWidget`'s real response shape
+
+Your live test caught a real bug: `/draw` failed with "didn't return a
+widget_id". The actual `sendWidget` response nests the widget under
+`result["widget"]["id"]` (confirmed from your paste: `{"message_id": ...,
+"widget": {"id": "...", "width": ..., "height": ..., "html": "..."}, ...}`)
+— my code was looking for a top-level `widget_id` field that doesn't
+exist. There's now an `extract_sent_widget_id(result)` helper in `bot.py`
+that reads the real nested shape (with a fallback to a top-level
+`widget_id` in case a future Bot API version or a native client method
+ever uses that instead), used by both `/widgetshared` and `/draw`. Error
+messages were also trimmed — commands no longer dump the raw API response
+into the chat on failure, just a short description of what went wrong.
+
+This also confirms, again, that `sendWidget` itself has been working the
+whole time (your widget rendered as a real interactive card, not plain
+text) — the bug was purely in how the bot read the id back out of a
+successful response.
 
 ### What's actually confirmed vs. still open
 
@@ -51,7 +76,13 @@ degrades gracefully (silently, via try/catch) when `window.TelegramWidget`
 doesn't exist — which it won't outside an actual Telegram widget sandbox.
 `/widgetweather`'s HTML builder was verified against a mocked Open-Meteo
 response (its real network calls weren't reachable from the environment
-that built this).
+that built this). You reported weather "isn't coming" with no further
+detail, so rather than guess blindly, `/widgetweather <place>` is now
+deprioritized: it's still there as a standalone command if you want to
+dig into it later, but it's no longer on the `/widgetmenu` button row —
+`/ping` (above) takes that slot as a simpler, nothing-can-go-wrong test.
+If you want weather debugged, paste whatever it actually replies with
+(an error message, or nothing at all) and that's enough to go on.
 
 Still genuinely unverified, because none of it is possible without a real
 bot token talking to real Telegram (your last test confirmed `sendWidget`

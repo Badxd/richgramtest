@@ -281,15 +281,16 @@ def start_text() -> str:
             else "Userbot off (STRING_SESSION nahi hai)",
             "--- Bot API 10.4 widgets ---",
             "/widgetmenu - widget picker (buttons)",
-            "/widgettest - send a basic HTML widget",
+            "/ping - minimal widget, no button, nothing to go wrong",
+            "/widgettest - send a basic HTML widget (with a button)",
+            "/lifegame - Conway's Game of Life widget",
+            "/draw - shared drawing board widget",
+            "/drawclear - clear this chat's drawing board",
             "/widgetshared - send + re-send + edit a shared widget",
             "/widgetedit - edit the last widget's state",
             "/widgetwallet - build a sample TON wallet answer (no send)",
             "/widgetlog - last widget_query/shared_widget_query received",
-            "/lifegame - Conway's Game of Life widget",
-            "/widgetweather &lt;place&gt; - live weather widget (Open-Meteo)",
-            "/draw - shared drawing board widget",
-            "/drawclear - clear this chat's drawing board",
+            "/widgetweather &lt;place&gt; - live weather widget (Open-Meteo; not confirmed working)",
         ])
     )
 
@@ -489,6 +490,24 @@ if user:
 LAST_WIDGET = {}          # chat_id -> {"message_id": int, "clicks": int}
 LAST_SHARED_WIDGET = {}   # chat_id -> {"widget_id": str, "clicks": int}
 
+
+def extract_sent_widget_id(result):
+    """A sendWidget result nests the widget under result["widget"]["id"]
+    (confirmed live: {"message_id": ..., "widget": {"id": "...", "width":
+    ..., "height": ..., "html": "..."}, ...}), not a top-level
+    "widget_id" — this handles both the confirmed dict shape and a
+    hypothetical object/native-client shape.
+    """
+    if isinstance(result, dict):
+        widget = result.get("widget")
+        if isinstance(widget, dict) and widget.get("id"):
+            return widget["id"]
+        return result.get("widget_id")
+    widget = getattr(result, "widget", None)
+    if widget is not None:
+        return widget.get("id") if isinstance(widget, dict) else getattr(widget, "id", None)
+    return getattr(result, "widget_id", None)
+
 # A short ring buffer of the last widget_query/shared_widget_query updates
 # seen by the poller below, for /widgetlog to show.
 WIDGET_QUERY_LOG = []
@@ -580,10 +599,12 @@ async def bot_widgetshared(_, message):
             result = await send_widget(
                 bot, message.chat.id, shared_widget_html(0), is_shared=True, allow_queries=True
             )
-            widget_id = result.get("widget_id") if isinstance(result, dict) else getattr(result, "widget_id", None)
+            widget_id = extract_sent_widget_id(result)
             if not widget_id:
                 return await message.reply_text(
-                    f"sendWidget (is_shared=True) didn't return a widget_id: {result!r}"
+                    "sendWidget (is_shared=True) succeeded but no widget_id "
+                    "was found in the response — Telegram may have changed "
+                    "the response shape again."
                 )
             LAST_SHARED_WIDGET[message.chat.id] = {"widget_id": widget_id, "clicks": 0}
             return await message.reply_text(
@@ -680,9 +701,9 @@ def widget_menu_text() -> str:
     return (
         rich_heading("Widgets", level=3)
         + rich_list([
+            "<b>Ping</b> - minimal widget, no button, nothing to go wrong",
             "<b>Ping test</b> - a tiny widget with a button (sendWidget)",
             "<b>Game of Life</b> - Conway's cellular automaton, runs client-side",
-            "<b>Weather</b> - live forecast card (ask for a place after tapping)",
             "<b>Shared board</b> - draw together, synced via a shared widget",
         ])
     )
@@ -690,12 +711,45 @@ def widget_menu_text() -> str:
 
 def widget_menu_kb() -> str:
     return rich_button_row(
+        rich_button("Ping", callback_data="wmenu_pingmin"),
         rich_button("Ping test", callback_data="wmenu_ping"),
-        rich_button("Game of Life", callback_data="wmenu_life"),
     ) + rich_button_row(
-        rich_button("Weather", callback_data="wmenu_weather"),
+        rich_button("Game of Life", callback_data="wmenu_life"),
         rich_button("Shared board", callback_data="wmenu_draw"),
     )
+
+
+PING_WIDGET_HTML = """<!doctype html><html><head><meta charset="utf-8">
+<style>
+body{margin:0;padding:18px;font-family:sans-serif;text-align:center;
+background:var(--tg-theme-bg-color,#123);color:var(--tg-theme-text-color,#fff)}
+h1{font-size:30px;margin:4px 0}
+p{opacity:.7;font-size:12px;margin:0}
+</style></head><body>
+<h1>pong</h1>
+<p>richgram - Bot API 10.4 widget</p>
+<script>
+if (window.TelegramWidget && window.TelegramWidget.ready) window.TelegramWidget.ready();
+</script></body></html>"""
+
+
+async def run_ping_widget(chat_id):
+    """No button, no allow_queries, no network call of its own — just a
+    static widget. If this doesn't render, nothing downstream of
+    sendWidget (allow_queries, widget_query delivery, Open-Meteo, ...) is
+    the problem.
+    """
+    try:
+        await send_widget(bot, chat_id, PING_WIDGET_HTML)
+    except WidgetAPIError as e:
+        await bot.send_message(chat_id, f"sendWidget rejected: {e}")
+    except Exception as e:
+        await bot.send_message(chat_id, f"Ping widget failed: {type(e).__name__}: {e}")
+
+
+@bot.on_message(filters.command("ping") & filters.create(lambda _, __, m: is_owner(m.from_user.id)))
+async def bot_ping(_, message):
+    await run_ping_widget(message.chat.id)
 
 
 @bot.on_message(filters.command("widgetmenu") & filters.create(lambda _, __, m: is_owner(m.from_user.id)))
@@ -708,12 +762,12 @@ async def cb_widget_menu(_, cbq):
     action = cbq.data.split("_", 1)[1]
     chat_id = cbq.message.chat.id
     await cbq.answer()
-    if action == "ping":
+    if action == "pingmin":
+        await run_ping_widget(chat_id)
+    elif action == "ping":
         await bot_widgettest(_, cbq.message)
     elif action == "life":
         await run_lifegame(chat_id)
-    elif action == "weather":
-        await cbq.message.reply_text("Which place? Send: /widgetweather <place>")
     elif action == "draw":
         await run_draw(chat_id)
 
@@ -1077,9 +1131,13 @@ async def run_draw(chat_id):
                 bot, chat_id, DRAW_WIDGET_HTML, is_shared=True, allow_queries=True,
                 width=350, height=260,
             )
-            widget_id = result.get("widget_id") if isinstance(result, dict) else getattr(result, "widget_id", None)
+            widget_id = extract_sent_widget_id(result)
             if not widget_id:
-                return await bot.send_message(chat_id, f"sendWidget didn't return a widget_id: {result!r}")
+                return await bot.send_message(
+                    chat_id,
+                    "sendWidget (is_shared=True) succeeded but no widget_id "
+                    "was found in the response.",
+                )
             DRAW_WIDGET_BY_CHAT[chat_id] = widget_id
             DRAW_BOARDS[widget_id] = []
             await edit_shared_widget_data(bot, widget_id, public_data={"points": []}, cache_time=5)
